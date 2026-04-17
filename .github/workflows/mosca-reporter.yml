@@ -1,0 +1,163 @@
+name: MOSCA Reporter Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Modo de ejecución"
+        required: true
+        type: choice
+        options:
+          - daily
+          - weekly
+        default: weekly
+  schedule:
+    # Horarios en UTC (UYT = UTC-3)
+    # Diario 09:45 UYT
+    - cron: "45 12 * * *"
+    # Lunes 12:00 UYT
+    - cron: "0 15 * * 1"
+    # Viernes 14:00 UYT
+    - cron: "0 17 * * 5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mosca-reporter
+  cancel-in-progress: false
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r reporter/requirements.txt
+          python -m pip install google-ads google-api-python-client openpyxl anthropic
+
+      - name: Write GA4 key file
+        env:
+          GA4_KEY_JSON: ${{ secrets.GA4_KEY_JSON }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+          key = os.getenv("GA4_KEY_JSON", "").strip()
+          if not key:
+              print("Missing required secret: GA4_KEY_JSON")
+              sys.exit(1)
+          json.loads(key)
+          key_path = pathlib.Path("reporter/ga4-key.json")
+          key_path.write_text(key, encoding="utf-8")
+          print(f"GA4 key file generated at {key_path}")
+          PY
+
+      - name: Build .env
+        env:
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          META_AD_ACCOUNT_ID: ${{ secrets.META_AD_ACCOUNT_ID }}
+          META_TOKEN_DATE: ${{ secrets.META_TOKEN_DATE }}
+          GOOGLE_DEVELOPER_TOKEN: ${{ secrets.GOOGLE_DEVELOPER_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CUSTOMER_ID: ${{ secrets.GOOGLE_CUSTOMER_ID }}
+          GOOGLE_MCC_ID: ${{ secrets.GOOGLE_MCC_ID }}
+          TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+          TIKTOK_ADVERTISER_ID: ${{ secrets.TIKTOK_ADVERTISER_ID }}
+          GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, sys
+
+          env_file = pathlib.Path("reporter/.env")
+          ga4_key_file = pathlib.Path.cwd() / "reporter" / "ga4-key.json"
+
+          rows = [
+              ("META_ACCESS_TOKEN", os.getenv("META_ACCESS_TOKEN", "")),
+              ("META_AD_ACCOUNT_ID", os.getenv("META_AD_ACCOUNT_ID", "")),
+              ("META_TOKEN_DATE", os.getenv("META_TOKEN_DATE", "")),
+              ("GOOGLE_DEVELOPER_TOKEN", os.getenv("GOOGLE_DEVELOPER_TOKEN", "")),
+              ("GOOGLE_CLIENT_ID", os.getenv("GOOGLE_CLIENT_ID", "")),
+              ("GOOGLE_CLIENT_SECRET", os.getenv("GOOGLE_CLIENT_SECRET", "")),
+              ("GOOGLE_REFRESH_TOKEN", os.getenv("GOOGLE_REFRESH_TOKEN", "")),
+              ("GOOGLE_CUSTOMER_ID", os.getenv("GOOGLE_CUSTOMER_ID", "")),
+              ("GOOGLE_MCC_ID", os.getenv("GOOGLE_MCC_ID", "")),
+              ("TIKTOK_ACCESS_TOKEN", os.getenv("TIKTOK_ACCESS_TOKEN", "")),
+              ("TIKTOK_ADVERTISER_ID", os.getenv("TIKTOK_ADVERTISER_ID", "")),
+              ("GA4_PROPERTY_ID", os.getenv("GA4_PROPERTY_ID", "")),
+              ("GA4_KEY_FILE", str(ga4_key_file)),
+              ("EMAIL_SENDER", os.getenv("EMAIL_SENDER", "")),
+              ("EMAIL_APP_PASSWORD", os.getenv("EMAIL_APP_PASSWORD", "")),
+              ("EMAIL_RECIPIENT", os.getenv("EMAIL_RECIPIENT", "")),
+              ("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY", "")),
+          ]
+
+          required = {
+              "META_ACCESS_TOKEN",
+              "META_AD_ACCOUNT_ID",
+              "GOOGLE_DEVELOPER_TOKEN",
+              "GOOGLE_CLIENT_ID",
+              "GOOGLE_CLIENT_SECRET",
+              "GOOGLE_REFRESH_TOKEN",
+              "GOOGLE_CUSTOMER_ID",
+              "GOOGLE_MCC_ID",
+              "GA4_PROPERTY_ID",
+              "EMAIL_SENDER",
+              "EMAIL_APP_PASSWORD",
+              "EMAIL_RECIPIENT",
+          }
+          missing = [k for k, v in rows if k in required and not v]
+          if missing:
+              print("Missing required secrets:", ", ".join(sorted(missing)))
+              sys.exit(1)
+
+          env_file.write_text("\n".join(f"{k}={v}" for k, v in rows) + "\n", encoding="utf-8")
+          print(f"Environment file generated at {env_file}")
+          PY
+
+      - name: Resolve run mode
+        id: runmode
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MODE="${{ github.event.inputs.mode }}"
+          else
+            case "${{ github.event.schedule }}" in
+              "45 12 * * *") MODE="daily" ;;
+              *) MODE="weekly" ;;
+            esac
+          fi
+          echo "mode=${MODE}" >> "${GITHUB_OUTPUT}"
+          echo "Selected mode: ${MODE}"
+
+      - name: Run report
+        run: |
+          if [[ "${{ steps.runmode.outputs.mode }}" == "daily" ]]; then
+            python reporter/reporte.py --daily
+          else
+            python reporter/reporte.py
+          fi
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mosca-report-${{ github.run_id }}
+          path: |
+            reporter/reporte.log
+            reporter/*.xlsx
+          if-no-files-found: ignore
