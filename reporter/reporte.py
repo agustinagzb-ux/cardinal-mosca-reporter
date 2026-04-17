@@ -834,8 +834,6 @@ def update_excel(start_date, end_date, meta, google, tiktok, ga4, meta_daily, go
     RESUMEN_MONEY = (6, 7)
     RESUMEN_PCT   = (9,)
 
-    # daily_mode: actualización diaria (solo filas de datos, sin resúmenes ni status)
-    daily_mode = update_sheets and not add_status_tab
 
     # Helper: fila resumen destacada (fondo azul claro)
     SUMM_FILL = PatternFill("solid", fgColor="D6E4F0")
@@ -853,6 +851,20 @@ def update_excel(start_date, end_date, meta, google, tiktok, ga4, meta_daily, go
     if update_sheets:
         resumen_nueva = "Resumen" not in wb.sheetnames
         ws_r = ensure_sheet(wb, "Resumen", RESUMEN_HEADERS)
+        # Mantener layout homogéneo en la tabla principal (A:I)
+        resumen_widths = {1: 16, 2: 14, 3: 14, 4: 14, 5: 14, 6: 14, 7: 14, 8: 14, 9: 14}
+        for col, w in resumen_widths.items():
+            ws_r.column_dimensions[get_column_letter(col)].width = w
+        ws_r.row_dimensions[1].height = 48
+        ws_r.row_dimensions[2].height = 6
+        ws_r.row_dimensions[3].height = 20
+
+        # Eliminar restos del embudo histórico y dejar Resumen solo en A:I
+        to_unmerge = [str(mg) for mg in list(ws_r.merged_cells.ranges) if mg.max_col > 9]
+        for mg in to_unmerge:
+            ws_r.unmerge_cells(mg)
+        if ws_r.max_column > 9:
+            ws_r.delete_cols(10, ws_r.max_column - 9)
 
         # Inversión diaria (Meta + Google) para calcular ROAS por día
         inv_por_dia = defaultdict(float)
@@ -860,127 +872,110 @@ def update_excel(start_date, end_date, meta, google, tiktok, ga4, meta_daily, go
             inv_por_dia[r["fecha"]] += r["inversion"]
         for r in google_daily:
             inv_por_dia[r["fecha"]] += r["inversion"]
-
-        if not daily_mode:
-            # ── Limpiar duplicados: eliminar filas de resumen que quedaron
-            #    mezcladas entre los datos diarios (runs anteriores con bug) ────
-            rows_to_delete = []
-            for rr in range(7, ws_r.max_row + 1):
-                v = str(ws_r.cell(row=rr, column=1).value or "")
-                if v in ("Año anterior", "% vs año anterior"):
+        # ── Limpiar duplicados: eliminar filas de resumen que quedaron
+        #    mezcladas entre los datos diarios (runs anteriores con bug) ──────
+        rows_to_delete = []
+        for rr in range(7, ws_r.max_row + 1):
+            v = str(ws_r.cell(row=rr, column=1).value or "")
+            if v in ("Año anterior", "% vs año anterior"):
+                rows_to_delete.append(rr)
+            elif ws_r.cell(row=rr, column=1).value is None:
+                # fila con col A vacía pero con datos (resumen duplicado)
+                if any(ws_r.cell(row=rr, column=c).value is not None for c in range(2, 10)):
                     rows_to_delete.append(rr)
-                elif ws_r.cell(row=rr, column=1).value is None:
-                    # fila con col A vacía pero con datos (resumen duplicado)
-                    if any(ws_r.cell(row=rr, column=c).value is not None for c in range(2, 10)):
-                        rows_to_delete.append(rr)
-            for rr in reversed(rows_to_delete):
-                ws_r.delete_rows(rr)
+        for rr in reversed(rows_to_delete):
+            ws_r.delete_rows(rr)
 
-            # ── Totales del período ───────────────────────────────────────────
-            tot_ses  = sum(d.get("sesiones", 0)       for d in ga4_totals.values())
-            tot_cart = sum(d.get("add_to_cart", 0)    for d in ga4_totals.values())
-            tot_chk  = sum(d.get("begin_checkout", 0) for d in ga4_totals.values())
-            tot_pur  = sum(d.get("purchase", 0)       for d in ga4_totals.values())
-            tot_rev  = sum(d.get("revenue", 0.0)      for d in ga4_totals.values())
-            tot_inv  = sum(inv_por_dia.values())
-            tot_conv = round(tot_pur / tot_ses * 100, 2) if tot_ses > 0 else None
+        # ── Totales Analytics del período (siempre mismo rango analizado) ─────
+        tot_ses  = sum(d.get("sesiones", 0)       for d in ga4_totals.values())
+        tot_cart = sum(d.get("add_to_cart", 0)    for d in ga4_totals.values())
+        tot_chk  = sum(d.get("begin_checkout", 0) for d in ga4_totals.values())
+        tot_pur  = sum(d.get("purchase", 0)       for d in ga4_totals.values())
+        tot_rev  = sum(d.get("revenue", 0.0)      for d in ga4_totals.values())
+        tot_inv  = sum(inv_por_dia.values())
+        tot_conv = round(tot_pur / tot_ses * 100, 2) if tot_ses > 0 else None
 
-            # Helper: encuentra fila por valor en col A (rango 4-9) o devuelve None
-            def _find_row(ws, label):
-                for rr in range(4, min(10, ws.max_row + 1)):
-                    v = ws.cell(row=rr, column=1).value
-                    if label is None and v is None:
-                        return rr
-                    if label is not None and str(v or "") == label:
-                        return rr
-                return None
+        # ── Totales Analytics YoY del mismo período ───────────────────────────
+        has_yoy = bool(ga4_totals_yoy)
+        yoy_ses = yoy_cart = yoy_chk = yoy_pur = yoy_rev = yoy_conv = None
+        if has_yoy:
+            yoy_ses  = sum(d.get("sesiones", 0)       for d in ga4_totals_yoy.values())
+            yoy_cart = sum(d.get("add_to_cart", 0)    for d in ga4_totals_yoy.values())
+            yoy_chk  = sum(d.get("begin_checkout", 0) for d in ga4_totals_yoy.values())
+            yoy_pur  = sum(d.get("purchase", 0)       for d in ga4_totals_yoy.values())
+            yoy_rev  = sum(d.get("revenue", 0.0)      for d in ga4_totals_yoy.values())
+            yoy_conv = round(yoy_pur / yoy_ses * 100, 2) if yoy_ses > 0 else None
 
-            # Helper: escribe valores en una fila existente o la agrega al final
-            def _upsert_row(ws, row_idx, row_data, fill, font, money_cols=(), pct_cols=()):
-                if row_idx is None:
-                    ws.append(row_data)
-                    row_idx = ws.max_row
-                else:
-                    for col, val in enumerate(row_data, 1):
-                        ws.cell(row=row_idx, column=col).value = val
-                for col in range(1, len(row_data) + 1):
-                    c = ws.cell(row=row_idx, column=col)
-                    c.fill = fill
-                    c.font = font
-                fmt_row(ws, row_idx, money_cols=money_cols, pct_cols=pct_cols)
-                return row_idx
+        YOY_FILL  = PatternFill("solid", fgColor="EAF0FB")
+        YOY_FONT  = Font(size=10, name=HF, italic=True)
+        DIFF_FILL = PatternFill("solid", fgColor="FFF3CD")
+        DIFF_FONT = Font(bold=True, size=10, name=HF)
 
-            # ── Fila año anterior (YoY) ───────────────────────────────────────
-            YOY_FILL = PatternFill("solid", fgColor="EAF0FB")
-            YOY_FONT = Font(size=10, name=HF, italic=True)
-            if ga4_totals_yoy:
-                yoy_ses  = sum(d.get("sesiones", 0)       for d in ga4_totals_yoy.values())
-                yoy_cart = sum(d.get("add_to_cart", 0)    for d in ga4_totals_yoy.values())
-                yoy_chk  = sum(d.get("begin_checkout", 0) for d in ga4_totals_yoy.values())
-                yoy_pur  = sum(d.get("purchase", 0)       for d in ga4_totals_yoy.values())
-                yoy_rev  = sum(d.get("revenue", 0.0)      for d in ga4_totals_yoy.values())
-                yoy_conv = round(yoy_pur / yoy_ses * 100, 2) if yoy_ses > 0 else None
-                _upsert_row(ws_r, _find_row(ws_r, "Año anterior"), [
-                    "Año anterior",
-                    yoy_ses  or None,
-                    yoy_cart or None,
-                    yoy_chk  or None,
-                    yoy_pur  or None,
-                    inv_yoy  or None,
-                    yoy_rev  or None,
-                    None,
-                    yoy_conv,
-                ], YOY_FILL, YOY_FONT, money_cols=RESUMEN_MONEY, pct_cols=RESUMEN_PCT)
+        def _write_summary_fixed_row(row_idx, row_data, fill, font, money_cols=(), pct_cols=()):
+            for col, val in enumerate(row_data, 1):
+                ws_r.cell(row=row_idx, column=col).value = val
+            for col in range(1, len(row_data) + 1):
+                c = ws_r.cell(row=row_idx, column=col)
+                c.fill = fill
+                c.font = font
+                c.alignment = Alignment(horizontal="left" if col == 1 else "right", vertical="center")
+            fmt_row(ws_r, row_idx, money_cols=money_cols, pct_cols=pct_cols)
 
-            # ── Fila resumen del período actual ───────────────────────────────
-            _upsert_row(ws_r, _find_row(ws_r, None), [
+        # Fila 4: Año anterior (si hay datos YoY)
+        if has_yoy:
+            _write_summary_fixed_row(4, [
+                "Año anterior",
+                yoy_ses  or None,
+                yoy_cart or None,
+                yoy_chk  or None,
+                yoy_pur  or None,
+                inv_yoy  or None,
+                yoy_rev  or None,
                 None,
-                tot_ses  or None,
-                tot_cart or None,
-                tot_chk  or None,
-                tot_pur  or None,
-                tot_inv  or None,
-                tot_rev  or None,
-                round(tot_rev / tot_inv, 2) if tot_inv > 0 else None,
-                tot_conv,
-            ], SUMM_FILL, SUMM_FONT, money_cols=RESUMEN_MONEY, pct_cols=RESUMEN_PCT)
+                yoy_conv,
+            ], YOY_FILL, YOY_FONT, money_cols=RESUMEN_MONEY, pct_cols=RESUMEN_PCT)
 
-            # ── Fila diferencia % vs año anterior ─────────────────────────────
-            DIFF_FILL = PatternFill("solid", fgColor="FFF3CD")
-            DIFF_FONT = Font(bold=True, size=10, name=HF)
-            if ga4_totals_yoy:
-                def _pct_diff(curr, prev):
-                    if prev and prev != 0:
-                        return round((curr - prev) / abs(prev) * 100, 1)
-                    return None
-                ridx = _upsert_row(ws_r, _find_row(ws_r, "% vs año anterior"), [
-                    "% vs año anterior",
-                    _pct_diff(tot_ses,  yoy_ses),
-                    _pct_diff(tot_cart, yoy_cart),
-                    _pct_diff(tot_chk,  yoy_chk),
-                    _pct_diff(tot_pur,  yoy_pur),
-                    _pct_diff(tot_inv,  inv_yoy) if inv_yoy else None,
-                    _pct_diff(tot_rev,  yoy_rev),
-                    None,
-                    _pct_diff(tot_conv, yoy_conv) if (tot_conv and yoy_conv) else None,
-                ], DIFF_FILL, DIFF_FONT)
-                for col in (2, 3, 4, 5, 6, 9):
-                    ws_r.cell(row=ridx, column=col).number_format = '0.0"%"'
+        # Fila 5: Período actual
+        _write_summary_fixed_row(5, [
+            None,
+            tot_ses  or None,
+            tot_cart or None,
+            tot_chk  or None,
+            tot_pur  or None,
+            tot_inv  or None,
+            tot_rev  or None,
+            round(tot_rev / tot_inv, 2) if tot_inv > 0 else None,
+            tot_conv,
+        ], SUMM_FILL, SUMM_FONT, money_cols=RESUMEN_MONEY, pct_cols=RESUMEN_PCT)
+
+        # Fila 6: % vs año anterior
+        if has_yoy:
+            def _pct_diff(curr, prev):
+                if prev and prev != 0:
+                    return round((curr - prev) / abs(prev) * 100, 1)
+                return None
+            _write_summary_fixed_row(6, [
+                "% vs año anterior",
+                _pct_diff(tot_ses,  yoy_ses),
+                _pct_diff(tot_cart, yoy_cart),
+                _pct_diff(tot_chk,  yoy_chk),
+                _pct_diff(tot_pur,  yoy_pur),
+                _pct_diff(tot_inv,  inv_yoy) if inv_yoy else None,
+                _pct_diff(tot_rev,  yoy_rev),
+                None,
+                _pct_diff(tot_conv, yoy_conv) if (tot_conv and yoy_conv) else None,
+            ], DIFF_FILL, DIFF_FONT)
+            for col in (2, 3, 4, 5, 6, 9):
+                ws_r.cell(row=6, column=col).number_format = '0.0\"%\"'
+        else:
+            for col in range(1, 10):
+                ws_r.cell(row=6, column=col).value = None
 
         # ── Filas diarias Resumen (con dedup) ─────────────────────────────────
-        # Limpiar filas con fecha en col A que quedaron desplazadas debajo del
-        # gráfico de embudo (fila 57+) por el bug de append con max_row inflado.
-        # Se eliminan en reversa para no alterar índices.
-        for rr in reversed(range(57, ws_r.max_row + 1)):
-            if _date_pat.match(str(ws_r.cell(row=rr, column=1).value or '')):
-                for col in range(1, 10):
-                    ws_r.cell(row=rr, column=col).value = None
-
-        # Calcular la última fila con fecha real en col A (ignora filas del gráfico)
-        existing_r = _sheet_dates(ws_r)
-        last_data_row = 3
-        for rr in range(4, 57):
-            if _date_pat.match(str(ws_r.cell(row=rr, column=1).value or '')):
+        existing_r = _sheet_dates(ws_r, min_row=7)
+        last_data_row = 6
+        for rr in range(7, ws_r.max_row + 1):
+            if _date_pat.match(str(ws_r.cell(row=rr, column=1).value or "")):
                 last_data_row = rr
         next_row = last_data_row + 1
 
@@ -1007,164 +1002,6 @@ def update_excel(start_date, end_date, meta, google, tiktok, ga4, meta_daily, go
                 ws_r.cell(row=next_row, column=col).value = val
             fmt_row(ws_r, next_row, money_cols=RESUMEN_MONEY, pct_cols=RESUMEN_PCT)
             next_row += 1
-
-        # ── Actualizar filas de resumen con totales acumulados (modo diario) ───
-        if daily_mode:
-            s_ses = s_cart = s_chk = s_pur = s_inv = s_rev = 0.0
-            for rr in range(4, ws_r.max_row + 1):
-                v = str(ws_r.cell(row=rr, column=1).value or "")
-                if _date_pat.match(v):
-                    s_ses  += ws_r.cell(row=rr, column=2).value or 0
-                    s_cart += ws_r.cell(row=rr, column=3).value or 0
-                    s_chk  += ws_r.cell(row=rr, column=4).value or 0
-                    s_pur  += ws_r.cell(row=rr, column=5).value or 0
-                    s_inv  += ws_r.cell(row=rr, column=6).value or 0
-                    s_rev  += ws_r.cell(row=rr, column=7).value or 0
-
-            new_roas = round(s_rev / s_inv,       2) if s_inv > 0 else None
-            new_conv = round(s_pur / s_ses * 100, 2) if s_ses > 0 else None
-
-            # Sobreescribir fila del período (col A vacía = fila de totales)
-            for rr in range(4, min(10, ws_r.max_row + 1)):
-                if ws_r.cell(row=rr, column=1).value is None:
-                    ws_r.cell(row=rr, column=2).value = int(s_ses)  or None
-                    ws_r.cell(row=rr, column=3).value = int(s_cart) or None
-                    ws_r.cell(row=rr, column=4).value = int(s_chk)  or None
-                    ws_r.cell(row=rr, column=5).value = int(s_pur)  or None
-                    ws_r.cell(row=rr, column=6).value = s_inv or None
-                    ws_r.cell(row=rr, column=7).value = s_rev or None
-                    ws_r.cell(row=rr, column=8).value = new_roas
-                    ws_r.cell(row=rr, column=9).value = new_conv
-                    fmt_row(ws_r, rr, money_cols=RESUMEN_MONEY, pct_cols=RESUMEN_PCT)
-                    break
-
-            # Sobreescribir fila de diferencia % vs año anterior
-            for rr in range(4, min(10, ws_r.max_row + 1)):
-                v = str(ws_r.cell(row=rr, column=1).value or "")
-                if "%" in v and "año" in v.lower():
-                    # Leer YoY desde fila "Año anterior"
-                    yoy_ses = yoy_cart = yoy_chk = yoy_pur = yoy_inv = yoy_rev = None
-                    for rrr in range(4, rr):
-                        if str(ws_r.cell(row=rrr, column=1).value or "") == "Año anterior":
-                            yoy_ses  = ws_r.cell(row=rrr, column=2).value
-                            yoy_cart = ws_r.cell(row=rrr, column=3).value
-                            yoy_chk  = ws_r.cell(row=rrr, column=4).value
-                            yoy_pur  = ws_r.cell(row=rrr, column=5).value
-                            yoy_inv  = ws_r.cell(row=rrr, column=6).value
-                            yoy_rev  = ws_r.cell(row=rrr, column=7).value
-                            break
-                    yoy_conv = round(yoy_pur / yoy_ses * 100, 2) if (yoy_pur and yoy_ses) else None
-
-                    def _pd(curr, prev):
-                        if prev and prev != 0:
-                            return round((curr - prev) / abs(prev) * 100, 1)
-                        return None
-
-                    ws_r.cell(row=rr, column=2).value = _pd(s_ses,    yoy_ses)
-                    ws_r.cell(row=rr, column=3).value = _pd(s_cart,   yoy_cart)
-                    ws_r.cell(row=rr, column=4).value = _pd(s_chk,    yoy_chk)
-                    ws_r.cell(row=rr, column=5).value = _pd(s_pur,    yoy_pur)
-                    ws_r.cell(row=rr, column=6).value = _pd(s_inv,    yoy_inv)
-                    ws_r.cell(row=rr, column=7).value = _pd(s_rev,    yoy_rev)
-                    ws_r.cell(row=rr, column=8).value = None
-                    ws_r.cell(row=rr, column=9).value = _pd(new_conv, yoy_conv) if (new_conv and yoy_conv) else None
-                    for col in (2, 3, 4, 5, 6, 9):
-                        ws_r.cell(row=rr, column=col).number_format = '0.0"%"'
-                    break
-
-        # ── Embudo de conversión (cols K-V, filas 1-13) ───────────────────────
-        # Leer totales del período actual (fila con col A = None)
-        f_ses = f_cart = f_chk = f_pur = 0
-        for rr in range(4, min(10, ws_r.max_row + 1)):
-            if ws_r.cell(row=rr, column=1).value is None:
-                f_ses  = int(ws_r.cell(row=rr, column=2).value or 0)
-                f_cart = int(ws_r.cell(row=rr, column=3).value or 0)
-                f_chk  = int(ws_r.cell(row=rr, column=4).value or 0)
-                f_pur  = int(ws_r.cell(row=rr, column=5).value or 0)
-                break
-
-        if f_ses > 0:
-            FC = 11   # columna K
-            FW = 12   # ancho total (cols K-V)
-            FR = 57   # fila de inicio
-
-            # Limpiar TODA el área de columnas K-V (cualquier posición previa)
-            to_unmerge = [str(mg) for mg in list(ws_r.merged_cells.ranges)
-                          if mg.min_col >= FC and mg.max_col <= FC + FW - 1]
-            for mg in to_unmerge:
-                ws_r.unmerge_cells(mg)
-            for rr in range(1, FR + 14):
-                for cc in range(FC, FC + FW):
-                    c = ws_r.cell(row=rr, column=cc)
-                    c.value = None
-                    c.fill  = PatternFill("solid", fgColor="FFFFFF")
-                    c.font  = Font(size=10, name=HF)
-                    c.alignment = Alignment()
-                    c.number_format = "General"
-
-            # Ancho de columnas del embudo
-            for cc in range(FC, FC + FW):
-                ws_r.column_dimensions[get_column_letter(cc)].width = 6.0
-
-            # Etapas: (label, valor, ancho_en_cols, color_barra, color_fuente)
-            stages = [
-                ("Sesiones",    f_ses,  12, "003B73", "FFFFFF"),
-                ("Add to Cart", f_cart, 10, "1565A8", "FFFFFF"),
-                ("Checkout",    f_chk,   8, "3C8DC5", "FFFFFF"),
-                ("Compras",     f_pur,   6, "7BB8D4", "111111"),
-            ]
-            SIDE_FILL = PatternFill("solid", fgColor="EEF3F8")
-
-            BAR_H  = 28   # altura de cada barra
-            CONN_H = 14   # altura de cada conector (igual para todos)
-
-            # Título
-            ws_r.merge_cells(start_row=FR, start_column=FC,
-                             end_row=FR, end_column=FC + FW - 1)
-            tc = ws_r.cell(row=FR, column=FC)
-            tc.value     = "EMBUDO DE CONVERSIÓN"
-            tc.fill      = PatternFill("solid", fgColor=BLUE)
-            tc.font      = Font(bold=True, color="FFFFFF", size=11, name=HF)
-            tc.alignment = Alignment(horizontal="center", vertical="center")
-            ws_r.row_dimensions[FR].height = BAR_H
-
-            # Dibujar etapas: barra en FR+1+i*2, conector en FR+2+i*2
-            for i, (label, val, bar_w, color, font_color) in enumerate(stages):
-                row_bar  = FR + 1 + i * 2
-                offset   = (FW - bar_w) // 2
-                col_s    = FC + offset
-                col_e    = col_s + bar_w - 1
-                pct_val  = val / f_ses * 100 if f_ses > 0 else 0
-                bar_text = f"{label}   {val:,}   ({pct_val:.1f}%)"
-
-                # Celdas laterales
-                for cc in range(FC, col_s):
-                    ws_r.cell(row=row_bar, column=cc).fill = SIDE_FILL
-                for cc in range(col_e + 1, FC + FW):
-                    ws_r.cell(row=row_bar, column=cc).fill = SIDE_FILL
-
-                # Barra central
-                ws_r.merge_cells(start_row=row_bar, start_column=col_s,
-                                 end_row=row_bar, end_column=col_e)
-                bc = ws_r.cell(row=row_bar, column=col_s)
-                bc.value     = bar_text
-                bc.fill      = PatternFill("solid", fgColor=color)
-                bc.font      = Font(bold=True, color=font_color, size=10, name=HF)
-                bc.alignment = Alignment(horizontal="center", vertical="center")
-                ws_r.row_dimensions[row_bar].height = BAR_H
-
-                # Conector (excepto última etapa)
-                if i < len(stages) - 1:
-                    next_w   = stages[i + 1][2]
-                    next_off = (FW - next_w) // 2
-                    row_conn = row_bar + 1
-                    for cc in range(FC, FC + FW):
-                        cc_idx = cc - FC
-                        if next_off <= cc_idx < FW - next_off:
-                            ws_r.cell(row=row_conn, column=cc).fill = PatternFill("solid", fgColor=stages[i+1][3])
-                        else:
-                            ws_r.cell(row=row_conn, column=cc).fill = SIDE_FILL
-                    ws_r.row_dimensions[row_conn].height = CONN_H
 
     # Helper: suma GA4 atribuido a una lista de campañas (igual lógica que el email)
     def ga4_sum_for_campaigns(campaigns_list):
@@ -2076,10 +1913,17 @@ def main():
         print("\nEnviando email...")
         send_email(subject, html)
 
-    # ── YoY (solo en run semanal o manual) ───────────────────────────────────
+    # ── Excel: determinar qué actualizar ─────────────────────────────────────
+    # daily_run  → update_sheets=True,  add_status_tab=False  (solo filas diarias)
+    # semanal    → update_sheets=False, add_status_tab=True   (solo pestaña status)
+    # manual     → update_sheets=True,  add_status_tab=True   (todo)
+    update_sheets  = daily_run or manual_run
+    add_status_tab = not daily_run
+
+    # ── YoY para Resumen (mismo período analizado) ───────────────────────────
     ga4_totals_yoy = None
     inv_yoy        = 0.0
-    if not daily_run:
+    if update_sheets:
         try:
             start_dt  = datetime.strptime(start_date, "%Y-%m-%d")
             end_dt    = datetime.strptime(end_date,   "%Y-%m-%d")
@@ -2094,13 +1938,6 @@ def main():
         except Exception as e:
             print(f"      ✗ Error YoY: {e}")
             traceback.print_exc()
-
-    # ── Excel: determinar qué actualizar ─────────────────────────────────────
-    # daily_run  → update_sheets=True,  add_status_tab=False  (solo filas diarias)
-    # semanal    → update_sheets=False, add_status_tab=True   (solo pestaña status)
-    # manual     → update_sheets=True,  add_status_tab=True   (todo)
-    update_sheets  = daily_run or manual_run
-    add_status_tab = not daily_run
 
     print("\nActualizando Excel evolutivo...")
     excel_path = None
