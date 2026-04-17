@@ -1240,7 +1240,10 @@ def update_excel(start_date, end_date, meta, google, tiktok, ga4, meta_daily, go
 
     # ── Hoja "reporte del día" (una por envío, igual que el mail) ────────────
     sheet_name = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d-%m-%Y")
-    if add_status_tab and sheet_name not in wb.sheetnames:
+    if add_status_tab:
+        # Si ya existe la pestaña del día, se reconstruye para mantenerla actualizada.
+        if sheet_name in wb.sheetnames:
+            del wb[sheet_name]
         RPT_HEADERS = [
             "Campaña", "Inversión", "Alcance", "Impr.", "CPM", "Frec.",
             "Clicks", "CPC", "CTR", "Usuarios GA4", "Sesiones",
