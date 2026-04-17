@@ -1971,7 +1971,7 @@ def main():
     # ── Detectar modo de ejecución ────────────────────────────────────────────
     # --daily  → solo actualiza Resumen/Meta/Google con datos de ayer (sin email)
     # 2 args   → manual con fechas explícitas (email + status tab + hojas)
-    # sin args → programado lunes/viernes (email + status tab, sin tocar las 3 hojas)
+    # sin args → programado lunes/viernes usando fecha actual (email + status tab, sin tocar las 3 hojas)
 
     args      = sys.argv[1:]
     today_str = datetime.today().strftime("%Y-%m-%d")
@@ -1991,13 +1991,19 @@ def main():
     else:
         daily_run  = False
         manual_run = False
-        start_date, end_date = get_date_range()
+        start_date, _ = get_date_range()
+        end_date = today_str
         print(f"\n[SEMANAL] Período: {start_date} → {end_date}")
-
-    # ── Siempre día cerrado: end_date nunca puede ser hoy ni futuro ───────────
-    if end_date >= today_str:
+    # ── Reglas de fecha final ──────────────────────────────────────────────────
+    # daily: siempre día cerrado (ayer)
+    # manual: se recorta solo si viene en futuro
+    # semanal (sin args): permite fecha actual
+    if daily_run and end_date >= today_str:
         end_date = yesterday
         print(f"      → end_date ajustado a {end_date} (día cerrado)")
+    elif manual_run and end_date > today_str:
+        end_date = today_str
+        print(f"      → end_date ajustado a {end_date} (hoy)")
 
     # ── Obtener datos ─────────────────────────────────────────────────────────
     print("\n[1/4] Meta Ads...")
