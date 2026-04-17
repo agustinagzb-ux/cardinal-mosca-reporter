@@ -151,6 +151,23 @@ jobs:
           else
             python reporter/reporte.py
           fi
+      - name: Prepare artifacts
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          reporter_dir = Path("reporter")
+          xlsx_files = sorted(reporter_dir.glob("*.xlsx"))
+          if xlsx_files:
+              latest = max(xlsx_files, key=lambda p: p.stat().st_mtime)
+              safe_copy = reporter_dir / "mosca_reporte_mensual_latest.xlsx"
+              shutil.copy2(latest, safe_copy)
+              print(f"Artifact copy created: {safe_copy}")
+          else:
+              print("No XLSX file found to copy for artifact")
+          PY
 
       - name: Upload run artifacts
         if: always()
@@ -159,5 +176,5 @@ jobs:
           name: mosca-report-${{ github.run_id }}
           path: |
             reporter/reporte.log
-            reporter/*.xlsx
+            reporter/mosca_reporte_mensual_latest.xlsx
           if-no-files-found: ignore
